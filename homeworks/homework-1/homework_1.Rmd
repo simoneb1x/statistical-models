@@ -1,0 +1,421 @@
+---
+title: "Statistical Learning, Homework #1"
+author: "Simone Bellavia"
+date: '2022-04-04'
+geometry: "left=2cm,right=2cm,top=0.5cm,bottom=1.5cm"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,
+                      message=FALSE,
+                      tidy.opts=list(width.cutoff = 80),
+                      tidy = TRUE)
+library(tidyverse) # for tidyverse
+library(tidymodels) # for tidymodels
+library(class) # for knn
+library(caret) # for createDataPartition
+library(psych) # for dummy.code
+library(fastDummies) # for dummy_cols()
+library(e1071) # for Naive Bayes
+library(pROC)  # for ROC curve
+library(gmodels) # for CrossTable
+library(performance) # for compare_performance
+```
+
+```{r load breastfeed, include=FALSE}
+load("breastfeed.RData")
+```
+
+# Introduction to analysis
+
+The data come from a study conducted at a UK hospital, investigating the possible factors affecting the decision of pregnant women to breastfeed their babies, in order to *target breastfeeding promotions towards women with a lower probability of choosing it.*
+
+For the study, 135 expectant mothers were asked what kind of feeding method they would use for their coming baby. 
+
+The responses were classified into two categories (variable *breast* in the dataset): the first category (coded 1) includes the cases “breastfeeding”, “try to breastfeed” and “mixed breast and bottle-feeding”, while the second category (coded 0) corresponds to “exclusive bottle-feeding”. 
+The possible factors, that are available in the data, are the advancement of the pregnancy (*pregnancy*), how the mothers were fed as babies (*howfed*), how the mother’s friend fed their babies (*howfedfr*), if they have a partner (*partner*), their age (*age*), the age at which they left full-time education (*educat*), their ethnic group (*ethnic*) and if they have ever smoked (*smokebf*) or if they have stopped smoking (*smokenow*). All of the factors are two-level factors.
+
+What will need to be done in the report are the following points:
+
+- Data exploration
+- Division of data into training and test sets
+- Fit of the GLM model
+- Fit of the k-NN classifier
+- Fit of the Naïve Bayes classifier 
+- Evaluations of the performances and comparison of the results
+
+# Data Exploration
+
+We start the report with a first phase of Data Exploration. In particular we go to check the variables that are present, the number of observations and their detail.
+
+```{r}
+names(breastfeed)
+dim(breastfeed)
+summary(breastfeed)
+```
+
+We have 10 variables and 139 observations. From the summary of our dataset, we can see that  all variables are qualitative, non-numeric and binary, except for _age_ and _educat_ that are continuous.
+
+Through the scatter plot matrix it is possible to see all the different Pearson correlations within the variables and the distributions.
+
+```{r}
+pairs.panels(breastfeed)
+```
+
+It immediately jumps out that the variable *age* assumes almost a normal distribution. All the others are binary variables that follow their own distribution. Some correlations give us an idea of how they relate to the breast variable, although it is a rough idea. We will plot an histogram to check in detail the distribution of the response variable *breast*.
+
+```{r}
+plot(breastfeed$breast)
+```
+
+The distribution, as expected, is binary and is divided into "Bottle" and "Breast," which are two qualitative categories. At first sight, it can be seen that the majority of expectant mothers (71%) prefer a method that tends towards breastfeeding, while the remaining 29% prefer exclusive bottle-feeding. 
+
+From the summary it is also possible to detect 4 observations that contain missing values. So we can't proceed unless we pre-process these rows first, wtherwise we will not be able to use the GLM model. With _na.omit_ function all incomplete cases are removed and the new dataframe is cloned into *processed_breastfeed* (which we will reuse later).
+
+
+```{r}
+processed_breastfeed = na.omit(breastfeed)
+```
+
+For the purpose of GLM model fit, it is not necessary to proceed with data preprocessing. We can use the new dataframe we created without missing values. But first, we will divide the data into training and test sets.
+
+# Splitting the data into training and test sets
+
+We will set the seed to make the object reproducible. Then, we will partition 75% of the data into training set and the remaining 25% into the test set, by generating sampled and non-sequential indexes. The new sets will be called *glm_train* and *glm_test*.
+
+```{r}
+# setting the seed to make the partition reproducible
+set.seed(99)
+
+# 75% of the sample size
+smp_size <- floor(0.75 * nrow(processed_breastfeed))
+
+train_ind <- sample(seq_len(nrow(processed_breastfeed)), size = smp_size)
+
+glm_train <- processed_breastfeed[train_ind, ]
+glm_test <- processed_breastfeed[-train_ind, ]
+```
+
+With these two new sets, we can move forward with the fit of the statistical models.
+
+# GLM model
+
+## Fitting the GLM Model
+
+We now want to predict the `breast` target variable using a multivariate Logistic Regression model as follows:
+
+$logit(E(breast))=\beta_0+\beta_1pregnancy+\beta_2howfed+\beta_3howfedfr+\beta_4partner+\beta_5age+\beta_6educat+\beta_7ethnic+\beta_8smokenow+\beta_9smokebf$
+
+We will set up the model:
+
+```{r}
+glm.fits <- glm(breast ~ pregnancy + howfed + howfedfr + partner + age 
+                + educat + ethnic + smokenow + smokebf,
+                data=processed_breastfeed,
+                family=binomial) # family=binomial selects a Logistic Regression model
+glm.fits
+```
+
+## Inspecting the GLM object
+
+Let's inspect the GLM object to retrieve the informations that we generated, by calling the _summary_ function.
+
+```{r}
+summary(glm.fits)
+```
+
+Apparently, women early in pregnancy are less likely to decide to breastfeed. Another factor that seems to influence the choice to breastfeed is how the mother's friends decided to breastfeed. Women with partners are more likely to decide to breastfeed. A very interesting fact is that women of non-white ethnicity tend to choose to breastfeed. Women who smoke decide to avoid breastfeeding and lean toward bottle-feeding; instead, those who used to smoke in the past decide to breastfeed. Age and when they left full-time education do not seem to have a major impact on the decision.
+
+From the Null Deviance and the Residual Deviance we can calculate the $X^2$ statistic of the model:
+
+$X^2$ = Null deviance - Residual deviance
+$X^2$ = 156.58 - 94.40 = 62.18
+
+We have _p_ = 3 predictor variables degrees of freedom. Generating a _p_-value from our chi-square score, we can see that the P-Value is < .00001. The result is significant at p < .05. Since the p-value is much less than .05, we can conclude that the model is useful for predicting the likelihood that a mother will breastfeed.
+
+We will proceed fitting a logistic regression (LR) model through the library `tidymodels`.
+
+## Fitting GLM model with 'tidymodels'
+
+We will define a generalized linear model for binary outcomes, specifying in _lr_spec_ the package that we will use to fit the model ('glm' in this case), and setting the model's mode to classification. After the specification we will fit the model.
+
+```{r}
+lr_spec <- logistic_reg() %>% # define a generalized linear model for binary outcomes
+    set_engine("glm") %>% # declare which package will be used to fit the model
+    set_mode("classification") # set model's mode to classification
+
+lr_fit_tr <- lr_spec %>% 
+    fit(breast ~ pregnancy + howfed + howfedfr + partner + age 
+        + educat + ethnic + smokenow + smokebf,
+        data=glm_train)
+
+lr_fit_tr %>% 
+    pluck("fit") %>% # this function from the purrr library selects the "fit" slot
+    summary()
+```
+
+Now we are ready to get the predictions. We will use the `augment()` function that adds the predictions (labels and probabilities) to the original dataframe:
+
+```{r}
+augment(lr_fit_tr, new_data=glm_test) %>% # this silently evaluates the model on glm_test
+    conf_mat(truth=breast, estimate=.pred_class)
+```
+
+And then we can compute the accuracy with a Confusion Matrix:
+
+```{r}
+# to compute the accuracy:
+augment(lr_fit_tr, new_data=glm_test) %>%
+    accuracy(truth=breast, estimate=.pred_class)
+```
+
+Our model is 82% accurate, which is not bad at all. To improve the model, we can proceed by eliminating those variables that have minimal impact with respect to the choice to breastfeed. We try to remove the variables _age_, _educat_ and _howfed_, since from our summary we found that they are the least impactful variables on response variable breast.
+
+```{r}
+lr_fit_tr <- lr_spec %>% 
+    fit(breast ~ pregnancy + howfedfr + partner + ethnic + smokenow + smokebf,
+        data=glm_train)
+
+lr_fit_tr %>% 
+    pluck("fit") %>% # this function from the purrr library selects the "fit" slot
+    summary()
+```
+
+We generate the Confusion Matrix:
+
+```{r}
+augment(lr_fit_tr, new_data=glm_test) %>%
+    conf_mat(truth=breast, estimate=.pred_class)
+```
+
+And then let's compute the accuracy again:
+
+```{r}
+augment(lr_fit_tr, new_data=glm_test) %>%
+    accuracy(truth=breast, estimate=.pred_class)
+```
+
+Indeed we can see that the accuracy of our model has increased from 82% to 85%.
+
+# Fitting K-NN classifier
+
+Let's fit a k-NN classifier. Since k-NN involves calculating distances between datapoints, we must use numeric variables only. Therefore, it is needed to pre-process the data, transforming categorical variables into dummy variables.
+
+We will make a copy of our data set so that we can prepare it for our k-NN classification.
+
+```{r}
+breastfeed_for_knn <- processed_breastfeed
+```
+
+Next, we will put our outcome variable, *breast*, into its own object and remove it from the data set.
+
+```{r}
+# we put the outcome in its own object
+breast_outcome <- breastfeed_for_knn %>% select(breast)
+
+# remove original variable from the data set
+breastfeed_for_knn <- breastfeed_for_knn %>% select(-breast)
+```
+
+The outcome variable for k-NN classification should remain a factor variable.
+
+Now we are ready to dummy code any factor or categorical variables.
+
+```{r}
+str(breastfeed_for_knn)
+```
+
+We already know that pregnancy, howfed, howfedfr, partner, smokenow, smokebf and ethnic are all factor variables that have only two levels. We can dummy code them, in order to have variables with just two levels and coded 1/0.
+
+```{r}
+breastfeed_for_knn$pregnancy <- dummy.code(breastfeed_for_knn$pregnancy)
+breastfeed_for_knn$howfed <- dummy.code(breastfeed_for_knn$howfed)
+breastfeed_for_knn$howfedfr <- dummy.code(breastfeed_for_knn$howfedfr)
+breastfeed_for_knn$partner <- dummy.code(breastfeed_for_knn$partner)
+breastfeed_for_knn$smokenow <- dummy.code(breastfeed_for_knn$smokenow)
+breastfeed_for_knn$smokebf <- dummy.code(breastfeed_for_knn$smokebf)
+breastfeed_for_knn$ethnic <- dummy.code(breastfeed_for_knn$ethnic)
+```
+
+## Splitting the data into training and test sets for k-NN
+
+As we did in our GLM model, we proceed with the split into train and test set.
+
+```{r}
+# creating test and training sets that contain all of the predictors
+class_pred_train <- breastfeed_for_knn[train_ind, ]
+class_pred_test <- breastfeed_for_knn[-train_ind, ]
+```
+
+We will also split the response variable into training and test sets using the same partition.
+
+```{r}
+breast_outcome_train <- breast_outcome[train_ind, ]
+breast_outcome_test <- breast_outcome[-train_ind, ]
+```
+
+## Running K-NN Classification
+
+Using the k-NN algorithm we must be precise in using the right number of k. For this reason we will initially make three attempts, with k equal to 1, 3, and 5, respectively. Finally we will try the _caret_ package, which automatically chooses the optimal number of k.
+
+### Model evaluation with k=1
+
+We perform the fit, specifying the training and test sets and the factor of true classifications of training sets. Initially k will be equal to 1. The model is saved in *breast_pred_knn*.
+
+```{r}
+breast_pred_knn <- knn(train = class_pred_train, test = class_pred_test, 
+                       cl = breast_outcome_train, k=1)
+```
+
+Next we can make an evaluation of the model. We create a dataframe from the test variable *breast_outcome_test*, merge it with the dataframe of the model we created earlier, *breast_pred_knn*, and then compare the predicted breast variable outcomes with the observed ones.
+
+
+```{r}
+# put "breast_outcome_test" in a data frame
+breast_outcome_test <- data.frame(breast_outcome_test)
+
+# merge "breast_pred_knn" and "breast_outcome_test" 
+class_comparison <- data.frame(breast_pred_knn, breast_outcome_test)
+
+# specify column names for "class_comparison"
+names(class_comparison) <- c("PredictedBreast", "ObservedBreast")
+
+# inspect "class_comparison" 
+head(class_comparison)
+```
+We can create a table to examine the model accuracy:
+
+```{r}
+CrossTable(x = class_comparison$ObservedBreast, y = class_comparison$PredictedBreast, 
+           prop.chisq=FALSE, prop.c = FALSE, prop.r = FALSE, prop.t = FALSE)
+```
+
+Our model did not perform very well. The diagonal of the matrix represents the number of cases that were correctly classified for each category. If the model correctly classified all cases, the matrix would have zeros everywhere but the diagonal. Let's increase our number of k to 3.
+
+### Model evaluation k=3
+
+We repeat all previous steps, this time by tuning the number of k to 3:
+
+```{r}
+breast_pred_knn <- knn(train = class_pred_train, test = class_pred_test, 
+                       cl = breast_outcome_train, k=3)
+```
+
+Model evaluation:
+
+```{r}
+breast_outcome_test <- data.frame(breast_outcome_test)
+
+class_comparison <- data.frame(breast_pred_knn, breast_outcome_test)
+
+names(class_comparison) <- c("PredictedBreast", "ObservedBreast")
+
+head(class_comparison)
+```
+
+Generating the CrossTable:
+
+```{r}
+CrossTable(x = class_comparison$ObservedBreast, y = class_comparison$PredictedBreast, 
+           prop.chisq=FALSE, prop.c = FALSE, prop.r = FALSE, prop.t = FALSE)
+```
+
+We continue to increase the number of k to 5.
+
+### Model evaluation k=5
+
+Fitting the kNN with k = 5:
+
+```{r}
+breast_pred_knn <- knn(train = class_pred_train, test = class_pred_test, 
+                       cl = breast_outcome_train, k=5)
+```
+
+Model evaluation:
+
+```{r}
+# put "breast_outcome_test" in a data frame
+breast_outcome_test <- data.frame(breast_outcome_test)
+
+# merge "breast_pred_knn" and "breast_outcome_test" 
+class_comparison <- data.frame(breast_pred_knn, breast_outcome_test)
+
+# specify column names for "class_comparison"
+names(class_comparison) <- c("PredictedBreast", "ObservedBreast")
+
+# inspect "class_comparison" 
+head(class_comparison)
+```
+
+CrossTable:
+
+```{r}
+CrossTable(x = class_comparison$ObservedBreast, y = class_comparison$PredictedBreast, 
+           prop.chisq=FALSE, prop.c = FALSE, prop.r = FALSE, prop.t = FALSE)
+```
+
+The k-NN model appears not to perform as well as the logistic regression model.
+
+### k-NN classifier with caret package
+
+Now we will try with caret package, that will pick the optical number of neighbors automatically:
+
+```{r}
+breast_pred_caret <- train(class_pred_train, breast_outcome_train, 
+                           method = "knn", preProcess = c("center","scale"))
+
+breast_pred_caret
+```
+
+As the output explains, parameter tuning was performed based on the results ti accuracy. The final value that was used for the model is a k equal to 9.
+
+Let's plot a graph just to see the difference in accuracy of k between 5, 7, and 9:
+
+```{r}
+plot(breast_pred_caret)
+```
+
+As the graph shows us, the accuracy goes up from a minimum of 78% to a maximum of 80%. That still remains worse than the accuracy of the logistic regression model.
+
+# Fitting the Naïve Bayes classifier
+
+The standard Naïve Bayes classifier assumes independence of the predictor variables, and Gaussian distribution (given the target class) of metric predictors.
+
+Let's fit the model with the formula used for logit, specifying the dataset (*processed_breastfeed*) and the positive double controlling Laplace smoothing. 
+
+```{r}
+naivebayes_model <- naiveBayes(breast ~ pregnancy + howfed + howfedfr + partner + age 
+                               + educat + ethnic + smokenow + smokebf, 
+                               data = processed_breastfeed, 
+                               laplace = 3)
+```
+
+Then we store the predictions and we generate a Confusion Matrix:
+
+```{r}
+pred <- predict(naivebayes_model, processed_breastfeed[,-1])
+cMatrix <- table(pred, processed_breastfeed$breast)
+confusionMatrix(cMatrix,
+                positive="Breast")
+```
+
+This model achieves an accuracy of 81%.
+
+# Conclusions
+
+Given the performance of the various methods, we are now ready for a comparison of the results.
+
+## Target audience for breastfeeding promotion
+
+We have already discussed the results of the logistic regression model summary. Thus, we can assume that if we need to target breastfeeding promotions toward women with a lower probability of choosing it, we would need to target women who are early in their pregnancy and whose friendships are not inclined toward breastfeeding. Non-white ethnic women without partners are more likely not to breastfeed, so we might refer to them as well. Smoking women veer firmly toward bottle-feeding, so certainly they can be included in the target audience.
+
+## Models performance
+
+In terms of performance, we found that:
+
+- the *logistic regression model* achieves an accuracy of 85%;
+- the *kNN classifier,* after tuning the k parameters (the optimal one is 9), reaches an accuracy of 80%;
+- the *Naïve Bayes classifier* reaches an accuracy of about 81%.
+
+We can therefore conclude that *the model that performs best on this dataset is the logistic regression model.*
